@@ -1,2 +1,2 @@
-python-docs
+python-docx
 streamlit
