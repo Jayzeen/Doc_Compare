@@ -21,25 +21,6 @@ def get_text_from_content_controls(element):
                 texts.append(content_text)
     return " ".join(texts)
 
-def extract_comments_from_docx(file):
-    """
-    Extracts comments from a Word document.
-    Returns a dictionary mapping comment ID to comment text.
-    """
-    comments = {}
-    try:
-        with zipfile.ZipFile(file) as docx_zip:
-            xml_content = docx_zip.read('word/comments.xml')
-            tree = ET.fromstring(xml_content)
-            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-            for comment in tree.findall('w:comment', ns):
-                comment_id = comment.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
-                comment_text = ''.join(comment.itertext()).strip()
-                comments[comment_id] = comment_text
-    except Exception as e:
-        st.warning("No comments found or error extracting comments: " + str(e))
-    return comments
-
 def get_full_paragraph_text(para):
     """
     Returns the full text of a paragraph, including any text inside content controls.
@@ -53,25 +34,12 @@ def get_full_paragraph_text(para):
         st.error("Error extracting content control text: " + str(e))
     return full_text.strip()
 
-def extract_docx_paragraphs_and_comments(file):
+def extract_docx_paragraphs(file):
     """
-    Extracts paragraphs along with any associated comments.
-    Returns a list of tuples: (paragraph_full_text, [list_of_comment_texts]).
+    Extracts paragraphs as a list of text values.
     """
     document = Document(file)
-    comments = extract_comments_from_docx(file)
-    paragraphs_with_comments = []
-    for para in document.paragraphs:
-        full_text = get_full_paragraph_text(para)
-        if full_text:
-            comment_texts = []
-            for elem in para._p.iter():
-                if elem.tag.endswith('commentRangeStart'):
-                    comment_id = elem.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
-                    if comment_id in comments:
-                        comment_texts.append(comments[comment_id])
-            paragraphs_with_comments.append((full_text, comment_texts))
-    return paragraphs_with_comments
+    return [get_full_paragraph_text(para) for para in document.paragraphs if get_full_paragraph_text(para)]
 
 def extract_docx_tables(file):
     """
@@ -100,22 +68,18 @@ def extract_docx_tables(file):
 
 def compare_paragraphs(paragraphs1, paragraphs2):
     """
-    Compares two lists of paragraphs (with comments) and returns a list of diff strings.
+    Compares two lists of paragraphs and returns a list of diff strings.
     Uses difflib.ndiff to clearly show added or missing text and also displays the full changed value.
     """
     result = []
     max_len = max(len(paragraphs1), len(paragraphs2))
     for i in range(max_len):
-        text1, comm1 = paragraphs1[i] if i < len(paragraphs1) else ("", [])
-        text2, comm2 = paragraphs2[i] if i < len(paragraphs2) else ("", [])
+        text1 = paragraphs1[i] if i < len(paragraphs1) else ""
+        text2 = paragraphs2[i] if i < len(paragraphs2) else ""
         if text1 != text2:
             diff = "\n".join(difflib.ndiff([text1], [text2]))
             full_change = f"Full Change:\n- Original: {text1}\n- Changed: {text2}"
             result.append(f"Paragraph {i+1} text difference:\n{diff}\n{full_change}")
-        if comm1 != comm2:
-            diff_comm = "\n".join(difflib.ndiff(comm1, comm2))
-            full_comm_change = f"Full Comment Change:\n- Original: {comm1}\n- Changed: {comm2}"
-            result.append(f"Paragraph {i+1} comment difference:\n{diff_comm}\n{full_comm_change}")
     return result
 
 def compare_tables(tables1, tables2):
@@ -141,14 +105,14 @@ def compare_tables(tables1, tables2):
                     full_change = f"Full Change:\n- Original: {val1}\n- Changed: {val2}"
                     result.append(f"Table {t+1}, Row {row_index+1}, Cell {cell_index+1} difference:\n{diff}\n{full_change}")
             if len(row1) != len(row2):
-                result.append(f"Table {t+1}, Row {row_index+1} cell count differs: Doc1 has {len(row1)} cells vs Doc2 has {len(row2)} cells.")
+                result.append(f"Table {t+1}, Row {row_index+1} cell count differs: Original Doc has {len(row1)} cells vs Other Doc2 has {len(row2)} cells.")
         if len(table1) != len(table2):
-            result.append(f"Table {t+1} row count differs: Doc1 has {len(table1)} rows vs Doc2 has {len(table2)} rows.")
+            result.append(f"Table {t+1} row count differs: Original Doc has {len(table1)} rows vs Other Doc2 has {len(table2)} rows.")
     return result
 
 # Streamlit app interface
 st.title("Word Document Comparison Tool")
-st.write("Upload two Word documents to compare texts, tables, and source comments.")
+st.write("Upload two Word documents to compare texts and tables.")
 
 file1 = st.file_uploader("Upload Original Document", type=["docx"])
 file2 = st.file_uploader("Upload Other Document", type=["docx"])
@@ -156,9 +120,9 @@ file2 = st.file_uploader("Upload Other Document", type=["docx"])
 if file1 and file2:
     st.write("Processing documents...")
     
-    # Extract paragraphs with comments (including content control text)
-    paragraphs1 = extract_docx_paragraphs_and_comments(file1)
-    paragraphs2 = extract_docx_paragraphs_and_comments(file2)
+    # Extract paragraphs (including content control text)
+    paragraphs1 = extract_docx_paragraphs(file1)
+    paragraphs2 = extract_docx_paragraphs(file2)
     
     # Extract tables (including content control text in cells)
     tables1 = extract_docx_tables(file1)
@@ -168,16 +132,19 @@ if file1 and file2:
     par_diff = compare_paragraphs(paragraphs1, paragraphs2)
     table_diff = compare_tables(tables1, tables2)
     
-    st.header("Paragraph Differences")
-    if par_diff:
-        for diff in par_diff:
-            st.code(diff, language="diff")
-    else:
-        st.write("No differences in paragraphs detected.")
+    # Create tabs for paragraph and table differences.
+    tab1, tab2 = st.tabs(["Paragraph Differences", "Table Differences"])
+
+    with tab1:
+        if par_diff:
+            for diff in par_diff:
+                st.code(diff, language="diff")
+        else:
+            st.write("No differences in paragraphs detected.")
     
-    st.header("Table Differences")
-    if table_diff:
-        for diff in table_diff:
-            st.code(diff, language="diff")
-    else:
-        st.write("No differences in tables detected.")
+    with tab2:
+        if table_diff:
+            for diff in table_diff:
+                st.code(diff, language="diff")
+        else:
+            st.write("No differences in tables detected.")
